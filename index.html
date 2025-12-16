@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Happy New Year 2026 Fireworks & Review</title>
+    <!-- Load Tailwind CSS for responsive styling of the memory panel -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the dark, space-like background */
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #0d0d1a;
+            font-family: 'Inter', sans-serif;
+        }
+
+        canvas {
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 10;
+        }
+
+        #memory-output {
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 20;
+            max-width: 90%;
+            width: 800px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            background-color: #1a202cdd; /* Semi-transparent dark background */
+            backdrop-filter: blur(5px);
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(49, 46, 129, 0.5);
+            transition: opacity 0.5s ease;
+        }
+
+        .animate-pulse {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Memory/Review Display Panel -->
+    <div id="memory-output" class="hidden">
+        <!-- Content inserted by JavaScript -->
+    </div>
+
+    <script>
+(function() { // IIFE added to create a local scope and prevent global variable conflicts
+        // --- Gemini API Configuration & Utility Functions ---
+
+        const apiKey = "AIzaSyCoxR01HgbUUWcMOWU_LXrIkFaXuJF46Q4"; // API Key is automatically provided by the Canvas environment
+        const apiUrlTemplate = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        let isFetchingMemory = false;
+        let memoryContent = null; // Stores { status: 'loading' | 'success' | 'error', text, sources }
+
+        // Utility for robust fetching with exponential backoff
+        async function fetchWithBackoff(url, options, maxRetries = 5) {
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (response.ok) {
+                        return await response.json();
+                    } else if (response.status === 429 && attempt < maxRetries - 1) {
+                        const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    } else {
+                        const errorText = await response.text();
+                        throw new Error(`HTTP error ${response.status}: ${errorText}`);
+                    }
+                } catch (error) {
+                    if (attempt === maxRetries - 1) {
+                        console.error("Max retries reached. Failed to fetch:", error);
+                        throw error;
+                    }
+                    const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+            throw new Error("Fetch failed after all retries.");
+        }
+
+        async function get2025Review() {
+            if (isFetchingMemory) return;
+            isFetchingMemory = true;
+            memoryContent = { status: 'loading' };
+
+            // System instructions guide the model's persona and output format
+            const systemPrompt = "Act as a New Year's Eve narrator. Provide a concise, single-paragraph summary of global accomplishments and positive trends from the year 2025, focusing on themes like growth, progress, and resilience.";
+            const userQuery = "Summarize the major positive themes and accomplishments of the year 2025. Be uplifting and forward-looking.";
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                tools: [{ "google_search": {} }], // Enable grounding for real-time information
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+
+            try {
+                const result = await fetchWithBackoff(apiUrlTemplate, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const candidate = result.candidates?.[0];
+
+                if (candidate && candidate.content?.parts?.[0]?.text) {
+                    const text = candidate.content.parts[0].text;
+                    let sources = [];
+                    const groundingMetadata = candidate.groundingMetadata;
+                    if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                        sources = groundingMetadata.groundingAttributions
+                            .map(attribution => ({
+                                uri: attribution.web?.uri,
+                                title: attribution.web?.title,
+                            }))
+                            .filter(source => source.uri && source.title);
+                    }
+                    memoryContent = { status: 'success', text, sources };
+
+                } else {
+                    memoryContent = { status: 'error', text: 'Error: Could not generate memory content.' };
+                }
+            } catch (e) {
+                memoryContent = { status: 'error', text: `Failed to fetch memories: ${e.message}. Please refresh.` };
+            } finally {
+                isFetchingMemory = false;
+            }
+        }
+
+
+        // --- Fireworks Animation Logic ---
+
+        let chars, particles, canvas, ctx, w, h, current;
+
+        // Configuration for dynamic durations
+        const STANDARD_DURATION = 4000;  // 4 seconds for HNY 2026
+        const MEMORY_DURATION = 10000;   // 10 seconds for memory sequence words
+
+        const str = ['Happy', 'New', 'Year', '2026', 'Reviewing', '2025', 'Memories', 'Shine'];
+        const WORD_DURATIONS = [
+            STANDARD_DURATION, STANDARD_DURATION, STANDARD_DURATION, STANDARD_DURATION,
+            MEMORY_DURATION, MEMORY_DURATION, MEMORY_DURATION, MEMORY_DURATION
+        ];
+        const MEMORY_TRIGGER_WORDS = ['Reviewing', '2025'];
+        const CYCLE_DURATION = WORD_DURATIONS.reduce((a, b) => a + b, 0); 
+        let memoryOutputElement;
+
+        // Helper function to determine the current word index and timing based on total time (t)
+        function getWordTiming(t) {
+            let t_wrapped = t % CYCLE_DURATION;
+            let index = 0;
+            let elapsed = 0;
+
+            while (index < str.length) {
+                const currentDuration = WORD_DURATIONS[index];
+                if (t_wrapped < elapsed + currentDuration) {
+                    const timeInWord = t_wrapped - elapsed;
+                    return { 
+                        index: index, 
+                        duration: currentDuration, 
+                        timeInWord: timeInWord,
+                        // Normalized time (0 to 1) for animation phase calculation
+                        t_normalized: timeInWord / currentDuration,
+                        totalCycles: Math.floor(t / CYCLE_DURATION)
+                    };
+                }
+                elapsed += currentDuration;
+                index++;
+            }
+            // Fallback (should only happen due to floating point error near cycle wrap)
+            const lastIndex = str.length - 1;
+            return { 
+                index: lastIndex, 
+                duration: WORD_DURATIONS[lastIndex], 
+                timeInWord: WORD_DURATIONS[lastIndex], 
+                t_normalized: 1.0,
+                totalCycles: Math.floor(t / CYCLE_DURATION)
+            };
+        }
+
+
+        function init() {
+            canvas = document.createElement('canvas');
+            document.body.append(canvas);
+            memoryOutputElement = document.getElementById('memory-output');
+            ctx = canvas.getContext('2d');
+
+            // Start the loop
+            resize();
+            requestAnimationFrame(render);
+            addEventListener('resize', resize);
+        }
+
+        function resize() {
+            w = canvas.width = window.innerWidth;
+            h = canvas.height = window.innerHeight;
+            // Responsive particle count based on screen width
+            particles = w < 600 ? 55 : w < 1024 ? 80 : 110;
+        }
+
+        // Creates particle map for a single character
+        function makeChar(c, size) {
+            let tmp = document.createElement('canvas');
+            let tmpSize = tmp.width = tmp.height = size;
+            let tmpCtx = tmp.getContext('2d');
+
+            // Responsive Font Size
+            const fontSize = Math.floor(tmpSize * 0.5);
+            tmpCtx.font = `bold ${fontSize}px 'Inter', sans-serif`;
+            tmpCtx.fillStyle = 'white';
+            tmpCtx.textBaseline = "middle";
+            tmpCtx.textAlign = "center";
+            tmpCtx.fillText(c, tmpSize / 2, tmpSize / 2);
+
+            let charData = tmpCtx.getImageData(0, 0, tmpSize, tmpSize);
+            let charParticles = [];
+            const maxParticles = particles * 2;
+
+            for (var i = 0; charParticles.length < maxParticles && i < tmpSize * tmpSize * 2; i++) {
+                let x = tmpSize * Math.random();
+                let y = tmpSize * Math.random();
+                let offset = (parseInt(y) * tmpSize + parseInt(x)) * 4;
+                if (charData.data[offset] && Math.random() < 0.8) {
+                    charParticles.push([x - tmpSize / 2, y - tmpSize / 2])
+                }
+            }
+            return charParticles;
+        }
+
+        // Cycles through the words and triggers LLM call
+        function makeChars(t) {
+            const timing = getWordTiming(t);
+            let actual = timing.index;
+
+            if (current === actual) return;
+            current = actual;
+
+            const word = str[actual];
+
+            // Calculate a responsive size for the character canvas based on current viewport
+            const charCanvasSize = w < 400 ? 150 : w < 1024 ? 250 : 350;
+
+            // Trigger LLM call when memory phrase appears
+            if (MEMORY_TRIGGER_WORDS.includes(word) && !isFetchingMemory) {
+                get2025Review();
+            } else if (!MEMORY_TRIGGER_WORDS.includes(word)) {
+                // Hide memory content when not on a memory word
+                memoryContent = null;
+            }
+
+            chars = [...word].map(c => makeChar(c, charCanvasSize));
+        }
+
+        function render(t) {
+            makeChars(t);
+            requestAnimationFrame(render);
+
+            // Fading effect for the trails
+            ctx.fillStyle = '#0d0d1a12'; // Faintly darker background to retain trails
+            ctx.fillRect(0, 0, w, h);
+
+            if (chars) {
+                chars.forEach((pts, i) => firework(t, i, pts));
+            }
+
+            updateMemoryDisplay();
+        }
+
+        function firework(t, i, pts) {
+            const timing = getWordTiming(t);
+            let wordIndex = timing.index;
+            let word = str[wordIndex];
+            let actualDuration = timing.duration;
+            let t_in_word = timing.timeInWord;
+            let totalCycles = timing.totalCycles;
+
+            // Apply character offset to the word time (150ms delay per character)
+            t_in_word -= i * 150;
+            
+            // If the offset time is negative, the character is not yet ready to fire
+            if (t_in_word < 0) return; 
+
+            // Calculate 't_phase' (normalized phase from 0 to 1 over the word's duration)
+            let t_phase = t_in_word / actualDuration;
+
+            // Calculate a unique ID based on the character index and the cycle number
+            let id = i + chars.length * totalCycles * str.length + wordIndex * chars.length;
+            
+            // Limit t_phase to 1 for the animation
+            let t_anim = Math.min(1, t_phase); // Renamed to t_anim to avoid conflict with function argument t
+
+            // Calculate dynamic start position based on number of characters
+            let numChars = chars.length;
+            let totalWidth = w * 0.8; // Use 80% of width for display
+            let startX = (w - totalWidth) / 2;
+            let spacing = totalWidth / (numChars + 1);
+
+            let dx = startX + (i + 1) * spacing;
+
+            // Add horizontal movement for a more dynamic launch
+            dx += Math.sin(id * 0.7 + t_anim * 10) * w * 0.05; // Use t_anim
+
+            let dy = h * 0.5; // Target height
+
+            // Adjust target color: blue/purple for memory words, random for others
+            let isMemory = WORD_DURATIONS[wordIndex] === MEMORY_DURATION;
+            let hue = isMemory ? (250 + Math.sin(id) * 30) : id * 55;
+            let saturation = isMemory ? 80 : 55;
+            let lightness = isMemory ? 70 : 55;
+
+
+            if (t_anim < 0.33) { // Use t_anim
+                rocket(dx, dy, id, t_anim * 3, hue);
+            } else {
+                // The explosion lasts from t=0.33 to t=1.0. 
+                // Explosion phase t_exp should go from 0 to 1 during this time.
+                let t_exp = Math.min(1, Math.max(0, t_anim - 0.33) / (1 - 0.33)); // Use t_anim
+                explosion(pts, dx, dy, id, t_exp, hue, saturation, lightness);
+            }
+        }
+
+        function rocket(x, y, id, t, hue) {
+            ctx.fillStyle = `hsl(${hue}, 80%, 85%)`; // Brighter rocket trail
+            let r = 2 - 2 * t + Math.pow(t, 15 * t) * 16;
+            y = h - y * t;
+            circle(x, y, r);
+        }
+
+        function explosion(pts, x, y, id, t, baseHue, baseSat, baseLight) {
+            let dy = (t * t * t) * 20; // Gravity/fall effect
+            let r = Math.sin(id) * 1 + 3;
+            r = t < 0.5 ? (t + 0.5) * t * r : r - t * r;
+
+            ctx.fillStyle = `hsl(${baseHue}, ${baseSat}%, ${baseLight}%)`;
+
+            pts.forEach((xy, i) => {
+                // Color variation for sparkle effect
+                if (i % 10 === 0) {
+                    let sparkleLightness = baseLight + t * Math.sin(t * 55 + i) * 45;
+                    ctx.fillStyle = `hsl(${baseHue + Math.sin(i) * 10}, ${baseSat}%, ${sparkleLightness}%)`;
+                }
+
+                // Calculate particle position
+                let px = t * xy[0] + x;
+                let py = h - y + t * xy[1] + dy;
+
+                // Add a small randomized displacement
+                px += Math.sin(id * i * 0.1) * t * 2;
+                py += Math.cos(id * i * 0.1) * t * 2;
+
+                circle(px, py, r);
+            });
+        }
+
+        function circle(x, y, r) {
+            ctx.beginPath();
+            ctx.ellipse(x, y, r, r, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Renders the generated content to the DOM panel
+        function updateMemoryDisplay() {
+            if (!memoryContent || memoryContent.status === 'error') {
+                memoryOutputElement.classList.add('hidden');
+                if (memoryContent?.status === 'error') {
+                    // Show error briefly if one occurred
+                    memoryOutputElement.classList.remove('hidden');
+                    memoryOutputElement.innerHTML = `<p class="text-red-400 text-center">${memoryContent.text}</p>`;
+                    setTimeout(() => memoryOutputElement.classList.add('hidden'), 5000);
+                }
+                return;
+            }
+
+            if (memoryContent.status === 'loading') {
+                memoryOutputElement.classList.remove('hidden');
+                memoryOutputElement.innerHTML = `
+                    <p class="text-xl text-indigo-400 animate-pulse text-center">
+                        Reviewing 2025... Igniting Memories...
+                    </p>
+                `;
+                return;
+            }
+
+            if (memoryContent.status === 'success') {
+                memoryOutputElement.classList.remove('hidden');
+
+                let sourcesHtml = '';
+                if (memoryContent.sources && memoryContent.sources.length > 0) {
+                    // Filter for unique, valid sources and show max 3
+                    const uniqueSources = Array.from(new Map(memoryContent.sources.map(item => [item['uri'], item])).values());
+                    sourcesHtml = `
+                        <div class="mt-4 pt-2 border-t border-indigo-700/50">
+                            <p class="text-xs text-indigo-400 mb-1">Sources of Inspiration:</p>
+                            <ul class="list-disc list-inside space-y-1">
+                                ${uniqueSources.slice(0, 3).map(s =>
+                                    `<li class="text-xs text-indigo-300 truncate"><a href="${s.uri}" target="_blank" class="hover:underline">${s.title}</a></li>`
+                                ).join('')}
+                            </ul>
+                        </div>
+                    `;
+                }
+
+                memoryOutputElement.innerHTML = `
+                    <h2 class="text-2xl font-bold text-indigo-300 mb-2">2025 in Review:</h2>
+                    <p class="text-lg text-white leading-relaxed">${memoryContent.text}</p>
+                    ${sourcesHtml}
+                `;
+            }
+        }
+        
+        // Initialize the app
+        window.onload = init;
+})(); // End IIFE
+    </script>
+</body>
+</html>
